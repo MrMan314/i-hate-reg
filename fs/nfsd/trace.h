@@ -1202,37 +1202,6 @@ TRACE_EVENT(nfsd_file_close,
 	)
 );
 
-TRACE_EVENT(nfsd_file_fsync,
-	TP_PROTO(
-		const struct nfsd_file *nf,
-		int ret
-	),
-	TP_ARGS(nf, ret),
-	TP_STRUCT__entry(
-		__field(void *, nf_inode)
-		__field(int, nf_ref)
-		__field(int, ret)
-		__field(unsigned long, nf_flags)
-		__field(unsigned char, nf_may)
-		__field(struct file *, nf_file)
-	),
-	TP_fast_assign(
-		__entry->nf_inode = nf->nf_inode;
-		__entry->nf_ref = refcount_read(&nf->nf_ref);
-		__entry->ret = ret;
-		__entry->nf_flags = nf->nf_flags;
-		__entry->nf_may = nf->nf_may;
-		__entry->nf_file = nf->nf_file;
-	),
-	TP_printk("inode=%p ref=%d flags=%s may=%s nf_file=%p ret=%d",
-		__entry->nf_inode,
-		__entry->nf_ref,
-		show_nf_flags(__entry->nf_flags),
-		show_nfsd_may_flags(__entry->nf_may),
-		__entry->nf_file, __entry->ret
-	)
-);
-
 #include "cache.h"
 
 TRACE_DEFINE_ENUM(RC_DROPIT);
@@ -1396,19 +1365,19 @@ TRACE_EVENT(nfsd_cb_setup,
 		__field(u32, cl_id)
 		__field(unsigned long, authflavor)
 		__sockaddr(addr, clp->cl_cb_conn.cb_addrlen)
-		__array(unsigned char, netid, 8)
+		__string(netid, netid)
 	),
 	TP_fast_assign(
 		__entry->cl_boot = clp->cl_clientid.cl_boot;
 		__entry->cl_id = clp->cl_clientid.cl_id;
-		strlcpy(__entry->netid, netid, sizeof(__entry->netid));
+		__assign_str(netid, netid);
 		__entry->authflavor = authflavor;
 		__assign_sockaddr(addr, &clp->cl_cb_conn.cb_addr,
 				  clp->cl_cb_conn.cb_addrlen)
 	),
 	TP_printk("addr=%pISpc client %08x:%08x proto=%s flavor=%s",
 		__get_sockaddr(addr), __entry->cl_boot, __entry->cl_id,
-		__entry->netid, show_nfsd_authflavor(__entry->authflavor))
+		__get_str(netid), show_nfsd_authflavor(__entry->authflavor))
 );
 
 TRACE_EVENT(nfsd_cb_setup_err,

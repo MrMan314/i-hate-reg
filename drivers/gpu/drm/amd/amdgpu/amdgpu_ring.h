@@ -27,6 +27,7 @@
 #include <drm/amdgpu_drm.h>
 #include <drm/gpu_scheduler.h>
 #include <drm/drm_print.h>
+#include <drm/drm_suballoc.h>
 
 struct amdgpu_device;
 struct amdgpu_ring;
@@ -92,7 +93,7 @@ enum amdgpu_ib_pool_type {
 };
 
 struct amdgpu_ib {
-	struct amdgpu_sa_bo		*sa_bo;
+	struct drm_suballoc		*sa_bo;
 	uint32_t			length_dw;
 	uint64_t			gpu_addr;
 	uint32_t			*ptr;
@@ -164,7 +165,6 @@ struct amdgpu_ring_funcs {
 	bool			support_64bit_ptrs;
 	bool			no_user_fence;
 	bool			secure_submission_supported;
-	unsigned		vmhub;
 	unsigned		extra_dw;
 
 	/* ring read/write ptr handling */
@@ -249,6 +249,7 @@ struct amdgpu_ring {
 	uint64_t		ptr_mask;
 	uint32_t		buf_mask;
 	u32			idx;
+	u32			xcc_id;
 	u32			me;
 	u32			pipe;
 	u32			queue;
@@ -274,6 +275,7 @@ struct amdgpu_ring {
 	unsigned		cond_exe_offs;
 	u64			cond_exe_gpu_addr;
 	volatile u32		*cond_exe_cpu_addr;
+	unsigned		vm_hub;
 	unsigned		vm_inv_eng;
 	struct dma_fence	*vmid_wait;
 	bool			has_compute_vm_bug;
@@ -295,7 +297,7 @@ struct amdgpu_ring {
 #define amdgpu_ring_parse_cs(r, p, job, ib) ((r)->funcs->parse_cs((p), (job), (ib)))
 #define amdgpu_ring_patch_cs_in_place(r, p, job, ib) ((r)->funcs->patch_cs_in_place((p), (job), (ib)))
 #define amdgpu_ring_test_ring(r) (r)->funcs->test_ring((r))
-#define amdgpu_ring_test_ib(r, t) (r)->funcs->test_ib((r), (t))
+#define amdgpu_ring_test_ib(r, t) ((r)->funcs->test_ib ? (r)->funcs->test_ib((r), (t)) : 0)
 #define amdgpu_ring_get_rptr(r) (r)->funcs->get_rptr((r))
 #define amdgpu_ring_get_wptr(r) (r)->funcs->get_wptr((r))
 #define amdgpu_ring_set_wptr(r) (r)->funcs->set_wptr((r))

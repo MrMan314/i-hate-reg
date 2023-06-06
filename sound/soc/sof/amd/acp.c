@@ -318,7 +318,6 @@ static irqreturn_t acp_irq_thread(int irq, void *context)
 {
 	struct snd_sof_dev *sdev = context;
 	const struct sof_amd_acp_desc *desc = get_chip_info(sdev->pdata);
-	unsigned int base = desc->dsp_intr_base;
 	unsigned int val, count = ACP_HW_SEM_RETRY_COUNT;
 
 	val = snd_sof_dsp_read(sdev, ACP_DSP_BAR, desc->ext_intr_stat);
@@ -328,28 +327,20 @@ static irqreturn_t acp_irq_thread(int irq, void *context)
 		return IRQ_HANDLED;
 	}
 
-	val = snd_sof_dsp_read(sdev, ACP_DSP_BAR, base + DSP_SW_INTR_STAT_OFFSET);
-	if (val & ACP_DSP_TO_HOST_IRQ) {
-		while (snd_sof_dsp_read(sdev, ACP_DSP_BAR, desc->hw_semaphore_offset)) {
-			/* Wait until acquired HW Semaphore lock or timeout */
-			count--;
-			if (!count) {
-				dev_err(sdev->dev, "%s: Failed to acquire HW lock\n", __func__);
-				return IRQ_NONE;
-			}
+	while (snd_sof_dsp_read(sdev, ACP_DSP_BAR, desc->hw_semaphore_offset)) {
+		/* Wait until acquired HW Semaphore lock or timeout */
+		count--;
+		if (!count) {
+			dev_err(sdev->dev, "%s: Failed to acquire HW lock\n", __func__);
+			return IRQ_NONE;
 		}
-
-		sof_ops(sdev)->irq_thread(irq, sdev);
-		val |= ACP_DSP_TO_HOST_IRQ;
-		snd_sof_dsp_write(sdev, ACP_DSP_BAR, base + DSP_SW_INTR_STAT_OFFSET, val);
-
-		/* Unlock or Release HW Semaphore */
-		snd_sof_dsp_write(sdev, ACP_DSP_BAR, desc->hw_semaphore_offset, 0x0);
-
-		return IRQ_HANDLED;
 	}
 
-	return IRQ_NONE;
+	sof_ops(sdev)->irq_thread(irq, sdev);
+	/* Unlock or Release HW Semaphore */
+	snd_sof_dsp_write(sdev, ACP_DSP_BAR, desc->hw_semaphore_offset, 0x0);
+
+	return IRQ_HANDLED;
 };
 
 static irqreturn_t acp_irq_handler(int irq, void *dev_id)
@@ -360,8 +351,11 @@ static irqreturn_t acp_irq_handler(int irq, void *dev_id)
 	unsigned int val;
 
 	val = snd_sof_dsp_read(sdev, ACP_DSP_BAR, base + DSP_SW_INTR_STAT_OFFSET);
-	if (val)
+	if (val) {
+		val |= ACP_DSP_TO_HOST_IRQ;
+		snd_sof_dsp_write(sdev, ACP_DSP_BAR, base + DSP_SW_INTR_STAT_OFFSET, val);
 		return IRQ_WAKE_THREAD;
+	}
 
 	return IRQ_NONE;
 }
@@ -476,33 +470,39 @@ int amd_sof_acp_probe(struct snd_sof_dev *sdev)
 	unsigned int addr;
 	int ret;
 
+	chip = get_chip_info(sdev->pdata);
+	if (!chip) {
+		dev_err(sdev->dev, "no such device supported, chip id:%x\n", pci->device);
+		return -EIO;
+	}
 	adata = devm_kzalloc(sdev->dev, sizeof(struct acp_dev_data),
 			     GFP_KERNEL);
 	if (!adata)
 		return -ENOMEM;
 
 	adata->dev = sdev;
+	adata->dmic_dev = platform_device_register_data(sdev->dev, "dmic-codec",
+							PLATFORM_DEVID_NONE, NULL, 0);
+	if (IS_ERR(adata->dmic_dev)) {
+		dev_err(sdev->dev, "failed to register platform for dmic codec\n");
+		return PTR_ERR(adata->dmic_dev);
+	}
 	addr = pci_resource_start(pci, ACP_DSP_BAR);
 	sdev->bar[ACP_DSP_BAR] = devm_ioremap(sdev->dev, addr, pci_resource_len(pci, ACP_DSP_BAR));
 	if (!sdev->bar[ACP_DSP_BAR]) {
 		dev_err(sdev->dev, "ioremap error\n");
-		return -ENXIO;
+		ret = -ENXIO;
+		goto unregister_dev;
 	}
 
 	pci_set_master(pci);
 
 	sdev->pdata->hw_pdata = adata;
-
-	chip = get_chip_info(sdev->pdata);
-	if (!chip) {
-		dev_err(sdev->dev, "no such device supported, chip id:%x\n", pci->device);
-		return -EIO;
-	}
-
 	adata->smn_dev = pci_get_device(PCI_VENDOR_ID_AMD, chip->host_bridge_id, NULL);
 	if (!adata->smn_dev) {
 		dev_err(sdev->dev, "Failed to get host bridge device\n");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto unregister_dev;
 	}
 
 	sdev->ipc_irq = pci->irq;
@@ -511,16 +511,12 @@ int amd_sof_acp_probe(struct snd_sof_dev *sdev)
 	if (ret < 0) {
 		dev_err(sdev->dev, "failed to register IRQ %d\n",
 			sdev->ipc_irq);
-		pci_dev_put(adata->smn_dev);
-		return ret;
+		goto free_smn_dev;
 	}
 
 	ret = acp_init(sdev);
-	if (ret < 0) {
-		free_irq(sdev->ipc_irq, sdev);
-		pci_dev_put(adata->smn_dev);
-		return ret;
-	}
+	if (ret < 0)
+		goto free_ipc_irq;
 
 	sdev->dsp_box.offset = 0;
 	sdev->dsp_box.size = BOX_SIZE_512;
@@ -536,6 +532,14 @@ int amd_sof_acp_probe(struct snd_sof_dev *sdev)
 	acp_dsp_stream_init(sdev);
 
 	return 0;
+
+free_ipc_irq:
+	free_irq(sdev->ipc_irq, sdev);
+free_smn_dev:
+	pci_dev_put(adata->smn_dev);
+unregister_dev:
+	platform_device_unregister(adata->dmic_dev);
+	return ret;
 }
 EXPORT_SYMBOL_NS(amd_sof_acp_probe, SND_SOC_SOF_AMD_COMMON);
 
@@ -548,6 +552,9 @@ int amd_sof_acp_remove(struct snd_sof_dev *sdev)
 
 	if (sdev->ipc_irq)
 		free_irq(sdev->ipc_irq, sdev);
+
+	if (adata->dmic_dev)
+		platform_device_unregister(adata->dmic_dev);
 
 	return acp_reset(sdev);
 }

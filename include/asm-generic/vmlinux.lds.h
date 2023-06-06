@@ -558,6 +558,9 @@
 		ALIGN_FUNCTION();					\
 		__noinstr_text_start = .;				\
 		*(.noinstr.text)					\
+		__cpuidle_text_start = .;				\
+		*(.cpuidle.text)					\
+		__cpuidle_text_end = .;					\
 		__noinstr_text_end = .;
 
 /*
@@ -597,12 +600,6 @@
 		__lock_text_start = .;					\
 		*(.spinlock.text)					\
 		__lock_text_end = .;
-
-#define CPUIDLE_TEXT							\
-		ALIGN_FUNCTION();					\
-		__cpuidle_text_start = .;				\
-		*(.cpuidle.text)					\
-		__cpuidle_text_end = .;
 
 #define KPROBES_TEXT							\
 		ALIGN_FUNCTION();					\
@@ -894,9 +891,16 @@
 /*
  * Discard .note.GNU-stack, which is emitted as PROGBITS by the compiler.
  * Otherwise, the type of .notes section would become PROGBITS instead of NOTES.
+ *
+ * Also, discard .note.gnu.property, otherwise it forces the notes section to
+ * be 8-byte aligned which causes alignment mismatches with the kernel's custom
+ * 4-byte aligned notes.
  */
 #define NOTES								\
-	/DISCARD/ : { *(.note.GNU-stack) }				\
+	/DISCARD/ : {							\
+		*(.note.GNU-stack)					\
+		*(.note.gnu.property)					\
+	}								\
 	.notes : AT(ADDR(.notes) - LOAD_OFFSET) {			\
 		BOUNDED_SECTION_BY(.note.*, _notes)			\
 	} NOTES_HEADERS							\

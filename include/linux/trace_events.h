@@ -270,6 +270,7 @@ struct trace_event_fields {
 			const int  align;
 			const int  is_signed;
 			const int  filter_type;
+			const int  len;
 		};
 		int (*define_fields)(struct trace_event_call *);
 	};
@@ -805,6 +806,7 @@ enum {
 	FILTER_TRACE_FN,
 	FILTER_COMM,
 	FILTER_CPU,
+	FILTER_STACKTRACE,
 };
 
 extern int trace_event_raw_init(struct trace_event_call *call);

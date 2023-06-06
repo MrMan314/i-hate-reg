@@ -336,6 +336,7 @@ struct sk_filter;
   *	@sk_cgrp_data: cgroup data for this cgroup
   *	@sk_memcg: this socket's memory cgroup association
   *	@sk_write_pending: a write to stream socket waits to start
+  *	@sk_wait_pending: number of threads blocked on this socket
   *	@sk_state_change: callback to indicate change in the state of the sock
   *	@sk_data_ready: callback to indicate there is data to be processed
   *	@sk_write_space: callback to indicate there is bf sending space available
@@ -428,6 +429,7 @@ struct sock {
 	unsigned int		sk_napi_id;
 #endif
 	int			sk_rcvbuf;
+	int			sk_wait_pending;
 
 	struct sk_filter __rcu	*sk_filter;
 	union {
@@ -1174,6 +1176,7 @@ static inline void sock_rps_reset_rxhash(struct sock *sk)
 
 #define sk_wait_event(__sk, __timeo, __condition, __wait)		\
 	({	int __rc;						\
+		__sk->sk_wait_pending++;				\
 		release_sock(__sk);					\
 		__rc = __condition;					\
 		if (!__rc) {						\
@@ -1183,6 +1186,7 @@ static inline void sock_rps_reset_rxhash(struct sock *sk)
 		}							\
 		sched_annotate_sleep();					\
 		lock_sock(__sk);					\
+		__sk->sk_wait_pending--;				\
 		__rc = __condition;					\
 		__rc;							\
 	})
@@ -1349,40 +1353,12 @@ struct proto {
 	char			name[32];
 
 	struct list_head	node;
-#ifdef SOCK_REFCNT_DEBUG
-	atomic_t		socks;
-#endif
 	int			(*diag_destroy)(struct sock *sk, int err);
 } __randomize_layout;
 
 int proto_register(struct proto *prot, int alloc_slab);
 void proto_unregister(struct proto *prot);
 int sock_load_diag_module(int family, int protocol);
-
-#ifdef SOCK_REFCNT_DEBUG
-static inline void sk_refcnt_debug_inc(struct sock *sk)
-{
-	atomic_inc(&sk->sk_prot->socks);
-}
-
-static inline void sk_refcnt_debug_dec(struct sock *sk)
-{
-	atomic_dec(&sk->sk_prot->socks);
-	printk(KERN_DEBUG "%s socket %p released, %d are still alive\n",
-	       sk->sk_prot->name, sk, atomic_read(&sk->sk_prot->socks));
-}
-
-static inline void sk_refcnt_debug_release(const struct sock *sk)
-{
-	if (refcount_read(&sk->sk_refcnt) != 1)
-		printk(KERN_DEBUG "Destruction of the %s socket %p delayed, refcnt=%d\n",
-		       sk->sk_prot->name, sk, refcount_read(&sk->sk_refcnt));
-}
-#else /* SOCK_REFCNT_DEBUG */
-#define sk_refcnt_debug_inc(sk) do { } while (0)
-#define sk_refcnt_debug_dec(sk) do { } while (0)
-#define sk_refcnt_debug_release(sk) do { } while (0)
-#endif /* SOCK_REFCNT_DEBUG */
 
 INDIRECT_CALLABLE_DECLARE(bool tcp_stream_memory_free(const struct sock *sk, int wake));
 
@@ -1956,7 +1932,12 @@ void sk_common_release(struct sock *sk);
  *	Default socket callbacks and setup code
  */
 
-/* Initialise core socket variables */
+/* Initialise core socket variables using an explicit uid. */
+void sock_init_data_uid(struct socket *sock, struct sock *sk, kuid_t uid);
+
+/* Initialise core socket variables.
+ * Assumes struct socket *sock is embedded in a struct socket_alloc.
+ */
 void sock_init_data(struct socket *sock, struct sock *sk);
 
 /*
@@ -2154,7 +2135,7 @@ sk_dst_get(struct sock *sk)
 
 	rcu_read_lock();
 	dst = rcu_dereference(sk->sk_dst_cache);
-	if (dst && !atomic_inc_not_zero(&dst->__refcnt))
+	if (dst && !rcuref_get(&dst->__rcuref))
 		dst = NULL;
 	rcu_read_unlock();
 	return dst;
@@ -2434,6 +2415,19 @@ static inline __must_check bool skb_set_owner_sk_safe(struct sk_buff *skb, struc
 	return false;
 }
 
+static inline struct sk_buff *skb_clone_and_charge_r(struct sk_buff *skb, struct sock *sk)
+{
+	skb = skb_clone(skb, sk_gfp_mask(sk, GFP_ATOMIC));
+	if (skb) {
+		if (sk_rmem_schedule(sk, skb, skb->truesize)) {
+			skb_set_owner_r(skb, sk);
+			return skb;
+		}
+		__kfree_skb(skb);
+	}
+	return NULL;
+}
+
 static inline void skb_prepare_for_gro(struct sk_buff *skb)
 {
 	if (skb->destructor != sock_wfree) {
@@ -2707,7 +2701,7 @@ sock_recv_timestamp(struct msghdr *msg, struct sock *sk, struct sk_buff *skb)
 	else
 		sock_write_timestamp(sk, kt);
 
-	if (sock_flag(sk, SOCK_WIFI_STATUS) && skb->wifi_acked_valid)
+	if (sock_flag(sk, SOCK_WIFI_STATUS) && skb_wifi_acked_valid(skb))
 		__sock_recv_wifi_status(msg, sk, skb);
 }
 
@@ -2728,7 +2722,7 @@ static inline void sock_recv_cmsgs(struct msghdr *msg, struct sock *sk,
 		__sock_recv_cmsgs(msg, sk, skb);
 	else if (unlikely(sock_flag(sk, SOCK_TIMESTAMP)))
 		sock_write_timestamp(sk, skb->tstamp);
-	else if (unlikely(sk->sk_stamp == SK_DEFAULT_STAMP))
+	else if (unlikely(sock_read_timestamp(sk) == SK_DEFAULT_STAMP))
 		sock_write_timestamp(sk, 0);
 }
 

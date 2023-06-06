@@ -121,6 +121,9 @@
 #define PEBS_DATACFG_LBRS	BIT_ULL(3)
 #define PEBS_DATACFG_LBR_SHIFT	24
 
+/* Steal the highest bit of pebs_data_cfg for SW usage */
+#define PEBS_UPDATE_DS_SW	BIT_ULL(63)
+
 /*
  * Intel "Architectural Performance Monitoring" CPUID
  * detection/enumeration details:
@@ -158,6 +161,14 @@ union cpuid10_edx {
 	} split;
 	unsigned int full;
 };
+
+/*
+ * Intel "Architectural Performance Monitoring extension" CPUID
+ * detection/enumeration details:
+ */
+#define ARCH_PERFMON_EXT_LEAF			0x00000023
+#define ARCH_PERFMON_NUM_COUNTER_LEAF_BIT	0x1
+#define ARCH_PERFMON_NUM_COUNTER_LEAF		0x1
 
 /*
  * Intel Architectural LBR CPUID detection/enumeration details:
@@ -578,7 +589,7 @@ extern void perf_amd_brs_lopwr_cb(bool lopwr_in);
 
 DECLARE_STATIC_CALL(perf_lopwr_cb, perf_amd_brs_lopwr_cb);
 
-static inline void perf_lopwr_cb(bool lopwr_in)
+static __always_inline void perf_lopwr_cb(bool lopwr_in)
 {
 	static_call_mod(perf_lopwr_cb)(lopwr_in);
 }

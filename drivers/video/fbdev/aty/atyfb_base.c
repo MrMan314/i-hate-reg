@@ -2219,13 +2219,7 @@ static int aty_bl_update_status(struct backlight_device *bd)
 {
 	struct atyfb_par *par = bl_get_data(bd);
 	unsigned int reg = aty_ld_lcd(LCD_MISC_CNTL, par);
-	int level;
-
-	if (bd->props.power != FB_BLANK_UNBLANK ||
-	    bd->props.fb_blank != FB_BLANK_UNBLANK)
-		level = 0;
-	else
-		level = bd->props.brightness;
+	int level = backlight_get_brightness(bd);
 
 	reg |= (BLMOD_EN | BIASMOD_EN);
 	if (level > 0) {
@@ -3504,11 +3498,6 @@ static int atyfb_setup_generic(struct pci_dev *pdev, struct fb_info *info,
 	if (ret)
 		goto atyfb_setup_generic_fail;
 #endif
-	if (!(aty_ld_le32(CRTC_GEN_CNTL, par) & CRTC_EXT_DISP_EN))
-		par->clk_wr_offset = (inb(R_GENMO) & 0x0CU) >> 2;
-	else
-		par->clk_wr_offset = aty_ld_8(CLOCK_CNTL, par) & 0x03U;
-
 	/* according to ATI, we should use clock 3 for acelerated mode */
 	par->clk_wr_offset = 3;
 
